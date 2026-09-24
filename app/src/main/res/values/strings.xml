@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">LedMatrix</string>
+    <string name="instructions">Подключитесь к Wi-Fi LEDS. Пароль: 11111111. Затем касайтесь ячеек или ведите пальцем по сетке.</string>
+    <string name="initial_status">Ожидание Wi-Fi…</string>
+    <string name="reconnect">Переподключить</string>
+</resources>
