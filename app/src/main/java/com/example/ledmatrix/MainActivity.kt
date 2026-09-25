@@ -273,7 +273,6 @@ class MainActivity : Activity() {
             return
         }
 
-        // Добавляем специальный элемент в конец списка: «Удалить все кадры»
         val items = frames.indices.map { "Кадр ${it + 1}" }.toMutableList()
         items.add("Удалить все кадры")
 
@@ -285,12 +284,10 @@ class MainActivity : Activity() {
                 selected = which
             }
             .setPositiveButton("Закрыть") { _, _ ->
-                // Если выбран обычный кадр — переключаемся на него
                 if (selected in frames.indices) {
                     currentFrameIndex = selected
                     animationGrid.loadFrame(frames[selected])
                 }
-                // Если выбран «Удалить все» — ничего не делаем здесь, это обрабатывается в Negative
             }
             .setNeutralButton("Новый") { _, _ ->
                 frames.add(Frame())
@@ -298,26 +295,21 @@ class MainActivity : Activity() {
                 animationGrid.clearGrid()
                 showStatus("Создан новый кадр ${currentFrameIndex + 1}")
             }
-            // Кнопка «Удалить» теперь работает и как «Удалить выбранный», и как «Удалить все»,
-            // в зависимости от того, какой пункт списка выбран.
             .setNegativeButton("Удалить") { _, _ ->
                 when {
                     selected == items.lastIndex -> {
-                        // Выбран пункт «Удалить все кадры»
                         frames.clear()
                         currentFrameIndex = -1
                         animationGrid.clearGrid()
                         showStatus("Все кадры удалены.")
                     }
                     selected in frames.indices -> {
-                        // Удаляем один кадр
                         frames.removeAt(selected)
                         if (frames.isEmpty()) {
                             currentFrameIndex = -1
                             animationGrid.clearGrid()
                             showStatus("Последний кадр удалён. Список пуст.")
                         } else {
-                            // Выбираем предыдущий кадр или первый
                             val newIndex = (selected - 1).coerceAtLeast(0)
                             if (newIndex in frames.indices) {
                                 currentFrameIndex = newIndex
@@ -330,8 +322,6 @@ class MainActivity : Activity() {
             }
             .show()
     }
-
-    // --- Загрузка и запуск анимации ---
 
     private fun startPlayback() {
         val nonEmpty = frames.indices
@@ -361,13 +351,11 @@ class MainActivity : Activity() {
         val delay = (delayInput.text.toString().toIntOrNull() ?: 1000)
             .coerceIn(0, 65535)
 
-        // 1. Команда 'B' — начало загрузки (ESP8266 очищает хранилище)
         if (!currentSocket.send(byteArrayOf('B'.code.toByte()).toByteString())) {
             showStatus("Ошибка: очередь отправки переполнена")
             return
         }
 
-        // 2. Загружаем каждый кадр командой 'A'
         for (i in nonEmpty.indices) {
             val frame = frames[nonEmpty[i]]
             val packet = ByteArray(195)
@@ -386,7 +374,6 @@ class MainActivity : Activity() {
             }
         }
 
-        // 3. Команда 'P' — старт автономного воспроизведения
         val playPacket = ByteArray(5)
         playPacket[0] = 'P'.code.toByte()
         playPacket[1] = (duration and 0xFF).toByte()
@@ -396,7 +383,7 @@ class MainActivity : Activity() {
         currentSocket.send(playPacket.toByteString())
 
         isPlaying = true
-        findViewById<Button>(R.id.startButton)?.text = "Стоп"
+        findViewById<Button>(R.id.startButton).text = "Стоп"
 
         handler.removeCallbacks(sendTask)
 
@@ -407,7 +394,6 @@ class MainActivity : Activity() {
         isPlaying = false
         findViewById<Button>(R.id.startButton)?.text = "Старт"
 
-        // Команда 'X' — стоп на ESP8266
         if (connected && started) {
             socket?.send(byteArrayOf('X'.code.toByte()).toByteString())
         }
@@ -452,4 +438,164 @@ class MainActivity : Activity() {
 
         val request = NetworkRequest.Builder()
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-            .removeCapability(NetworkCapabilities.
+            .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .build()
+
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                handler.post {
+                    if (!started || generation != networkGeneration) return@post
+                    if (wifiNetwork != network) {
+                        wifiNetwork = network
+                        connectSocket()
+                    }
+                }
+            }
+
+            override fun onLost(network: Network) {
+                handler.post {
+                    if (!started || generation != networkGeneration) return@post
+                    if (wifiNetwork == network) {
+                        wifiNetwork = null
+                        dropSocket()
+                        showStatus("Wi-Fi потерян. Подключитесь к сети LEDS.")
+                    }
+                }
+            }
+
+            override fun onUnavailable() {
+                handler.post {
+                    if (!started || generation != networkGeneration) return@post
+                    wifiNetwork = null
+                    dropSocket()
+                    showStatus("Wi-Fi недоступен. Проверьте подключение к LEDS.")
+                }
+            }
+        }
+
+        networkCallback = callback
+
+        try {
+            connectivityManager.requestNetwork(request, callback)
+        } catch (exception: RuntimeException) {
+            networkCallback = null
+            showStatus("Не удалось запросить Wi-Fi: ${exception.message ?: exception.javaClass.simpleName}")
+        }
+    }
+
+    private fun connectSocket() {
+        if (!started) return
+        val network = wifiNetwork ?: return
+
+        dropSocket(graceful = true)
+        showStatus("Подключение к Wemos: 192.168.4.1…")
+
+        val generation = socketGeneration
+
+        val client = OkHttpClient.Builder()
+            .socketFactory(network.socketFactory)
+            .connectTimeout(4, TimeUnit.SECONDS)
+            .writeTimeout(4, TimeUnit.SECONDS)
+            .readTimeout(0, TimeUnit.MILLISECONDS)
+            .retryOnConnectionFailure(false)
+            .build()
+
+        httpClient = client
+
+        val request = Request.Builder().url(SOCKET_URL).build()
+
+        val listener = object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                handler.post {
+                    if (!started || generation != socketGeneration) {
+                        webSocket.cancel()
+                        return@post
+                    }
+
+                    connected = true
+                    matrixView.isEnabled = true
+                    showStatus("Подключено к Wemos. Матрица готова.")
+
+                    for (i in 0 until 8) {
+                        pendingBits[i] = 0
+                        lastSentBits[i] = 0
+                    }
+                    forceSend = true
+
+                    handler.removeCallbacks(heartbeatTask)
+                    handler.removeCallbacks(sendTask)
+
+                    if (connected) {
+                        handler.postDelayed(sendTask, SEND_INTERVAL_MS)
+                        handler.postDelayed(heartbeatTask, HEARTBEAT_MS)
+                    }
+                }
+            }
+
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                webSocket.close(code, reason)
+                handler.post { connectionFailed(generation, "Контроллер закрыл соединение.") }
+            }
+
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                handler.post { connectionFailed(generation, "Соединение закрыто.") }
+            }
+
+            override fun onFailure(webSocket: WebSocket, throwable: Throwable, response: Response?) {
+                handler.post { connectionFailed(generation, "Нет связи с Wemos. Проверьте сеть LEDS.") }
+            }
+        }
+
+        socket = client.newWebSocket(request, listener)
+    }
+
+    private fun connectionFailed(generation: Long, message: String) {
+        if (!started || generation != socketGeneration) return
+
+        dropSocket()
+
+        if (wifiNetwork != null) {
+            showStatus("$message Повторное подключение…")
+            handler.postDelayed(reconnectTask, RECONNECT_MS)
+        } else {
+            showStatus("Подключитесь к Wi-Fi LEDS.")
+        }
+    }
+
+    private fun dropSocket(graceful: Boolean = false) {
+        socketGeneration++
+        connected = false
+
+        handler.removeCallbacks(heartbeatTask)
+        handler.removeCallbacks(sendTask)
+        handler.removeCallbacks(reconnectTask)
+
+        val oldSocket = socket
+        socket = null
+
+        matrixView.clearTouch()
+        matrixView.isEnabled = false
+
+        for (i in 0 until 8) {
+            pendingBits[i] = 0
+            lastSentBits[i] = 0
+        }
+        forceSend = false
+
+        if (oldSocket != null) {
+            if (graceful) {
+                val emptyPacket = ByteArray(9)
+                emptyPacket[0] = 'S'.code.toByte()
+                val sent = oldSocket.send(emptyPacket.toByteString())
+                val closing = oldSocket.close(1000, "Leaving")
+                if (!sent || !closing) oldSocket.cancel()
+            } else {
+                oldSocket.cancel()
+            }
+        }
+
+        httpClient?.connectionPool?.evictAll()
+        httpClient?.dispatcher?.executorService?.shutdown()
+        httpClient = null
+    }
+}
