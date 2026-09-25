@@ -31,7 +31,6 @@ class MainActivity : Activity() {
         private const val HEARTBEAT_MS = 400L
         private const val RECONNECT_MS = 1500L
         private const val SEND_INTERVAL_MS = 10L
-        private const val CYCLE_GAP_MS = 1000L
     }
 
     private lateinit var matrixView: MatrixView
@@ -62,7 +61,11 @@ class MainActivity : Activity() {
     private val frames = mutableListOf<Frame>()
     private var currentFrameIndex = -1
     private var isPlaying = false
-    private var playFrameIndex = 0
+
+    // Предвычисленная последовательность непустых кадров.
+    // Вычисляется один раз при старте воспроизведения.
+    private var playSequence = listOf<Int>()
+    private var playPos = 0
 
     private val reconnectTask = Runnable {
         if (started && wifiNetwork != null) {
@@ -127,55 +130,32 @@ class MainActivity : Activity() {
         }
     }
 
-    // Воспроизведение: кадры идут строго по порядку,
-    // пустые пропускаются, после последнего — пауза 1 сек.
+    // Воспроизведение: идём строго по playSequence,
+    // каждый кадр — с интервалом «Длительность»,
+    // после последнего — пауза «Задержка», затем заново.
     private val playTask = object : Runnable {
         override fun run() {
-            if (!started || !connected || !isPlaying || frames.isEmpty()) {
+            if (!started || !connected || !isPlaying || playSequence.isEmpty()) {
                 stopPlayback()
                 return
             }
 
-            // Если дошли до конца списка — пауза 1 сек, затем заново
-            if (playFrameIndex >= frames.size) {
-                playFrameIndex = 0
-                handler.postDelayed(this, CYCLE_GAP_MS)
-                return
-            }
+            val frameIdx = playSequence[playPos]
+            sendAnimationFrame(frameIdx)
 
-            // Пропускаем пустые кадры
-            while (playFrameIndex < frames.size) {
-                if (frames[playFrameIndex].colors.any { it != 0 }) break
-                playFrameIndex++
-            }
+            showStatus("Воспроизведение: кадр ${frameIdx + 1}/${frames.size} (${playPos + 1}/${playSequence.size})")
 
-            // Если все оставшиеся пустые — проверяем, есть ли вообще
-            // хоть один непустой кадр
-            if (playFrameIndex >= frames.size) {
-                if (frames.none { it.colors.any { c -> c != 0 } }) {
-                    showStatus("Все кадры пустые — нечего воспроизводить")
-                    stopPlayback()
-                    return
-                }
-                playFrameIndex = 0
-                handler.postDelayed(this, CYCLE_GAP_MS)
-                return
-            }
-
-            // Отправляем кадр
-            sendAnimationFrame(playFrameIndex)
-
-            val nonEmptyCount = frames.count { it.colors.any { it != 0 } }
-            showStatus("Воспроизведение: кадр ${playFrameIndex + 1}/${frames.size} (непустых: $nonEmptyCount)")
-
-            playFrameIndex++
+            playPos++
 
             val durationInput = findViewById<EditText>(R.id.durationInput)
             val duration = durationInput.text.toString().toIntOrNull() ?: 200
 
-            if (playFrameIndex >= frames.size) {
-                // Дошли до конца — на следующем тике будет пауза
-                handler.postDelayed(this, CYCLE_GAP_MS)
+            if (playPos >= playSequence.size) {
+                // Дошли до конца — сброс и пауза
+                playPos = 0
+                val delayInput = findViewById<EditText>(R.id.delayInput)
+                val delay = delayInput.text.toString().toIntOrNull() ?: 1000
+                handler.postDelayed(this, delay.toLong())
             } else {
                 handler.postDelayed(this, duration.toLong())
             }
@@ -205,7 +185,6 @@ class MainActivity : Activity() {
             forceSend = true
         }
 
-        // Вкладки
         findViewById<Button>(R.id.tabDrawing).setOnClickListener {
             drawingLayout.visibility = View.VISIBLE
             animationLayout.visibility = View.GONE
@@ -231,8 +210,6 @@ class MainActivity : Activity() {
             }
         }
 
-        // --- Анимация: кнопки ---
-
         findViewById<Button>(R.id.colorButton).setOnClickListener {
             showColorPicker()
         }
@@ -245,8 +222,6 @@ class MainActivity : Activity() {
             animationGrid.clearGrid()
         }
 
-        // Сохранить кадр: сохраняет текущий, создаёт новый пустой,
-        // переключается на него
         findViewById<Button>(R.id.saveFrameButton).setOnClickListener {
             if (currentFrameIndex in frames.indices) {
                 frames[currentFrameIndex] = animationGrid.getCurrentFrame()
@@ -254,7 +229,6 @@ class MainActivity : Activity() {
                 frames.add(animationGrid.getCurrentFrame())
             }
 
-            // Создаём новый пустой кадр и переключаемся
             frames.add(Frame())
             currentFrameIndex = frames.size - 1
             animationGrid.clearGrid()
@@ -271,10 +245,6 @@ class MainActivity : Activity() {
             if (isPlaying) {
                 stopPlayback()
             } else {
-                if (frames.none { it.colors.any { it != 0 } }) {
-                    showStatus("Нет непустых кадров для анимации")
-                    return@setOnClickListener
-                }
                 startPlayback()
             }
         }
@@ -356,10 +326,24 @@ class MainActivity : Activity() {
     }
 
     private fun startPlayback() {
+        // Предвычисляем список непустых кадров один раз.
+        // Порядок всегда 0 → 1 → 2 → … — никакой рандомизации.
+        playSequence = frames.indices
+            .filter { frames[it].colors.any { c -> c != 0 } }
+            .toList()
+
+        if (playSequence.isEmpty()) {
+            showStatus("Нет непустых кадров для анимации")
+            return
+        }
+
         isPlaying = true
-        playFrameIndex = 0
+        playPos = 0
+
+        handler.removeCallbacks(playTask)
         handler.removeCallbacks(sendTask)
         handler.post(playTask)
+
         findViewById<Button>(R.id.startButton).text = "Стоп"
     }
 
