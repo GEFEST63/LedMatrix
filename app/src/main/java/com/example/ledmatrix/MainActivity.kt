@@ -26,7 +26,6 @@ class MainActivity : Activity() {
         private const val HEARTBEAT_MS = 400L
         private const val RECONNECT_MS = 1500L
         private const val SEND_INTERVAL_MS = 10L
-        private const val MAX_QUEUE = 64
     }
 
     private lateinit var matrixView: MatrixView
@@ -47,7 +46,16 @@ class MainActivity : Activity() {
     private var networkGeneration = 0L
     private var socketGeneration = 0L
 
-    private val sendQueue = ArrayDeque<Int>()
+    // Битовая маска ячеек, затронутых с последней отправки.
+    // 8 байт — по одному на строку, биты — столбцы.
+    private val pendingBits = ByteArray(8)
+
+    // Последнее отправленное состояние — чтобы не слать
+    // одинаковые пакеты, когда палец неподвижен.
+    private val lastSentBits = ByteArray(8)
+
+    // Флаг: принудительно отправить (heartbeat, отпускание).
+    private var forceSend = false
 
     private val reconnectTask = Runnable {
         if (started && wifiNetwork != null) {
@@ -55,27 +63,62 @@ class MainActivity : Activity() {
         }
     }
 
-    // Отправляем одну ячейку из очереди каждые 10 мс.
-    // Каждая ячейка получает отдельный пакет и отдельный
-    // millis() на ESP8266 — поэтому остывание идёт по очереди.
+    // Каждые 10 мс: собираем пакет из pendingBits + activeCell,
+    // отправляем только если состояние изменилось.
     private val sendTask = object : Runnable {
         override fun run() {
-            if (!started || !connected) {
-                return
+            if (!started || !connected) return
+
+            val currentSocket = socket ?: return
+
+            // Собираем биты: затронутые + активная ячейка.
+            val bits = ByteArray(8)
+            for (i in 0 until 8) {
+                bits[i] = pendingBits[i]
             }
 
-            if (sendQueue.isNotEmpty()) {
-                val cell = sendQueue.removeFirst()
-                val currentSocket = socket
-                if (currentSocket != null) {
-                    val accepted = currentSocket.send(makeStatePacket(cell))
-                    if (!accepted) {
-                        connectionFailed(
-                            socketGeneration,
-                            "Не удалось отправить состояние."
-                        )
-                        return
+            val cell = matrixView.activeCell
+            if (cell in 0 until 64) {
+                val row = cell / 8
+                val col = cell % 8
+                bits[row] = (bits[row].toInt() or (1 shl col)).toByte()
+            }
+
+            // Очищаем накопленные биты.
+            for (i in 0 until 8) {
+                pendingBits[i] = 0
+            }
+
+            // Проверяем, изменилось ли состояние.
+            var changed = forceSend
+            if (!changed) {
+                for (i in 0 until 8) {
+                    if (bits[i] != lastSentBits[i]) {
+                        changed = true
+                        break
                     }
+                }
+            }
+
+            if (changed) {
+                for (i in 0 until 8) {
+                    lastSentBits[i] = bits[i]
+                }
+                forceSend = false
+
+                val packet = ByteArray(9)
+                packet[0] = 'S'.code.toByte()
+                for (i in 0 until 8) {
+                    packet[1 + i] = bits[i]
+                }
+
+                val accepted = currentSocket.send(packet.toByteString())
+                if (!accepted) {
+                    connectionFailed(
+                        socketGeneration,
+                        "Не удалось отправить состояние."
+                    )
+                    return
                 }
             }
 
@@ -85,17 +128,13 @@ class MainActivity : Activity() {
         }
     }
 
+    // Heartbeat: раз в 400 мс заставляем sendTask отправить
+    // текущее состояние (для проверки связи и переподключений).
     private val heartbeatTask = object : Runnable {
         override fun run() {
-            if (!started || !connected) {
-                return
-            }
+            if (!started || !connected) return
 
-            // Добавляем текущее состояние в очередь,
-            // только если она пуста — иначе пакет уже идёт.
-            if (sendQueue.isEmpty()) {
-                sendQueue.addLast(matrixView.activeCell)
-            }
+            forceSend = true
 
             if (started && connected) {
                 handler.postDelayed(this, HEARTBEAT_MS)
@@ -115,13 +154,18 @@ class MainActivity : Activity() {
 
         matrixView.isEnabled = false
 
-        // Каждое изменение ячейки добавляем в очередь.
-        // Отправка идёт равномерно, без burst-нагрузки.
+        // Каждое изменение ячейки добавляем в битовую маску.
+        // Флаг forceSend гарантирует, что sendTask отправит
+        // пакет в ближайший тик (<=10 мс).
         matrixView.onCellChanged = {
-            if (sendQueue.size >= MAX_QUEUE) {
-                sendQueue.removeFirst()
+            val cell = matrixView.activeCell
+            if (cell in 0 until 64) {
+                val row = cell / 8
+                val col = cell % 8
+                pendingBits[row] =
+                    (pendingBits[row].toInt() or (1 shl col)).toByte()
             }
-            sendQueue.addLast(matrixView.activeCell)
+            forceSend = true
         }
 
         findViewById<Button>(R.id.reconnectButton).setOnClickListener {
@@ -282,9 +326,12 @@ class MainActivity : Activity() {
 
                     showStatus("Подключено к Wemos. Матрица готова.")
 
-                    // Очищаем очередь и отправляем начальное состояние.
-                    sendQueue.clear()
-                    sendQueue.addLast(matrixView.activeCell)
+                    // Сбрасываем состояние и форсируем отправку.
+                    for (i in 0 until 8) {
+                        pendingBits[i] = 0
+                        lastSentBits[i] = 0
+                    }
+                    forceSend = true
 
                     handler.removeCallbacks(heartbeatTask)
                     handler.removeCallbacks(sendTask)
@@ -363,20 +410,6 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun makeStatePacket(cell: Int): ByteString {
-        val bytes = ByteArray(9)
-        bytes[0] = 'S'.code.toByte()
-
-        if (cell in 0 until 64) {
-            val row = cell / 8
-            val col = cell % 8
-
-            bytes[1 + row] = (1 shl col).toByte()
-        }
-
-        return bytes.toByteString()
-    }
-
     private fun dropSocket(graceful: Boolean = false) {
         socketGeneration++
 
@@ -386,17 +419,25 @@ class MainActivity : Activity() {
         handler.removeCallbacks(sendTask)
         handler.removeCallbacks(reconnectTask)
 
-        sendQueue.clear()
-
         val oldSocket = socket
         socket = null
 
         matrixView.clearTouch()
         matrixView.isEnabled = false
 
+        // Сбрасываем маски.
+        for (i in 0 until 8) {
+            pendingBits[i] = 0
+            lastSentBits[i] = 0
+        }
+        forceSend = false
+
         if (oldSocket != null) {
             if (graceful) {
-                val sent = oldSocket.send(makeStatePacket(-1))
+                // Отправляем пустой пакет (все ячейки отпущены).
+                val emptyPacket = ByteArray(9)
+                emptyPacket[0] = 'S'.code.toByte()
+                val sent = oldSocket.send(emptyPacket.toByteString())
                 val closing = oldSocket.close(1000, "Leaving")
 
                 if (!sent || !closing) {
