@@ -19,7 +19,6 @@
         android:layout_height="0dp"
         android:layout_weight="1">
 
-        <!-- Режим рисования -->
         <LinearLayout
             android:id="@+id/drawingLayout"
             android:layout_width="match_parent"
@@ -40,7 +39,6 @@
                 android:text="Переподключить" />
         </LinearLayout>
 
-        <!-- Режим анимации -->
         <LinearLayout
             android:id="@+id/animationLayout"
             android:layout_width="match_parent"
@@ -94,13 +92,6 @@
                 android:orientation="horizontal"
                 android:gravity="center_vertical">
 
-                <Button
-                    android:id="@+id/framesButton"
-                    android:layout_width="0dp"
-                    android:layout_weight="1"
-                    android:layout_height="wrap_content"
-                    android:text="Кадры" />
-
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
@@ -109,7 +100,8 @@
 
                 <EditText
                     android:id="@+id/durationInput"
-                    android:layout_width="70dp"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
                     android:layout_height="wrap_content"
                     android:inputType="number"
                     android:text="200"
@@ -121,6 +113,40 @@
                     android:text="мс"
                     android:padding="4dp" />
 
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Задерж.:"
+                    android:padding="4dp" />
+
+                <EditText
+                    android:id="@+id/delayInput"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:layout_height="wrap_content"
+                    android:inputType="number"
+                    android:text="1000"
+                    android:gravity="center" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="мс"
+                    android:padding="4dp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/framesButton"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:layout_height="wrap_content"
+                    android:text="Кадры" />
+
                 <Button
                     android:id="@+id/startButton"
                     android:layout_width="0dp"
@@ -131,7 +157,6 @@
         </LinearLayout>
     </FrameLayout>
 
-    <!-- Вкладки -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
