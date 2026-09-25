@@ -62,8 +62,6 @@ class MainActivity : Activity() {
     private var currentFrameIndex = -1
     private var isPlaying = false
 
-    // Предвычисленная последовательность непустых кадров.
-    // Вычисляется один раз при старте воспроизведения.
     private var playSequence = listOf<Int>()
     private var playPos = 0
 
@@ -130,9 +128,6 @@ class MainActivity : Activity() {
         }
     }
 
-    // Воспроизведение: идём строго по playSequence,
-    // каждый кадр — с интервалом «Длительность»,
-    // после последнего — пауза «Задержка», затем заново.
     private val playTask = object : Runnable {
         override fun run() {
             if (!started || !connected || !isPlaying || playSequence.isEmpty()) {
@@ -151,7 +146,6 @@ class MainActivity : Activity() {
             val duration = durationInput.text.toString().toIntOrNull() ?: 200
 
             if (playPos >= playSequence.size) {
-                // Дошли до конца — сброс и пауза
                 playPos = 0
                 val delayInput = findViewById<EditText>(R.id.delayInput)
                 val delay = delayInput.text.toString().toIntOrNull() ?: 1000
@@ -185,21 +179,50 @@ class MainActivity : Activity() {
             forceSend = true
         }
 
+        // --- Вкладка "Рисование" ---
         findViewById<Button>(R.id.tabDrawing).setOnClickListener {
             drawingLayout.visibility = View.VISIBLE
             animationLayout.visibility = View.GONE
             stopPlayback()
+
+            // Сбрасываем режим анимации на ESP8266.
+            sendClearCommand()
+
+            // Сбрасываем состояние рисования.
+            for (i in 0 until 8) {
+                pendingBits[i] = 0
+                lastSentBits[i] = 0
+            }
+            forceSend = true
+            matrixView.clearTouch()
+
+            // Перезапускаем sendTask — без этого
+            // режим рисования не работает после анимации.
+            if (connected && started) {
+                handler.removeCallbacks(sendTask)
+                handler.postDelayed(sendTask, SEND_INTERVAL_MS)
+            }
+
+            showStatus("Режим рисования.")
         }
 
+        // --- Вкладка "Анимации" ---
         findViewById<Button>(R.id.tabAnimation).setOnClickListener {
             drawingLayout.visibility = View.GONE
             animationLayout.visibility = View.VISIBLE
             stopPlayback()
+
+            // Останавливаем sendTask рисования.
+            handler.removeCallbacks(sendTask)
+
+            // Сбрасываем матрицу.
             sendClearCommand()
+
             if (frames.isEmpty()) {
                 frames.add(Frame())
                 currentFrameIndex = 0
             }
+            showStatus("Режим анимации. Нарисуйте кадр.")
         }
 
         findViewById<Button>(R.id.reconnectButton).setOnClickListener {
@@ -210,6 +233,7 @@ class MainActivity : Activity() {
             }
         }
 
+        // --- Анимация: кнопки ---
         findViewById<Button>(R.id.colorButton).setOnClickListener {
             showColorPicker()
         }
@@ -244,6 +268,7 @@ class MainActivity : Activity() {
         findViewById<Button>(R.id.startButton).setOnClickListener {
             if (isPlaying) {
                 stopPlayback()
+                sendClearCommand()
             } else {
                 startPlayback()
             }
@@ -326,8 +351,6 @@ class MainActivity : Activity() {
     }
 
     private fun startPlayback() {
-        // Предвычисляем список непустых кадров один раз.
-        // Порядок всегда 0 → 1 → 2 → … — никакой рандомизации.
         playSequence = frames.indices
             .filter { frames[it].colors.any { c -> c != 0 } }
             .toList()
