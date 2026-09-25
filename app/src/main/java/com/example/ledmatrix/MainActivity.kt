@@ -25,6 +25,7 @@ class MainActivity : Activity() {
         private const val SOCKET_URL = "ws://192.168.4.1:81/"
         private const val HEARTBEAT_MS = 400L
         private const val RECONNECT_MS = 1500L
+        private const val SEND_MIN_INTERVAL_MS = 10L
     }
 
     private lateinit var matrixView: MatrixView
@@ -42,9 +43,10 @@ class MainActivity : Activity() {
     private var httpClient: OkHttpClient? = null
     private var socket: WebSocket? = null
 
-    // Поколения нужны, чтобы игнорировать события устаревших соединений.
     private var networkGeneration = 0L
     private var socketGeneration = 0L
+
+    private var lastSendAt = 0L
 
     private val reconnectTask = Runnable {
         if (started && wifiNetwork != null) {
@@ -58,6 +60,7 @@ class MainActivity : Activity() {
                 return
             }
 
+            lastSendAt = System.currentTimeMillis()
             sendCurrentState()
 
             if (started && connected) {
@@ -79,7 +82,11 @@ class MainActivity : Activity() {
         matrixView.isEnabled = false
 
         matrixView.onCellChanged = {
-            sendCurrentState()
+            val now = System.currentTimeMillis()
+            if (now - lastSendAt >= SEND_MIN_INTERVAL_MS) {
+                lastSendAt = now
+                sendCurrentState()
+            }
         }
 
         findViewById<Button>(R.id.reconnectButton).setOnClickListener {
@@ -105,14 +112,12 @@ class MainActivity : Activity() {
         started = false
         networkGeneration++
 
-        // Сначала отправляем отпускание всех ячеек, затем закрываем сокет.
         dropSocket(graceful = true)
 
         networkCallback?.let { callback ->
             try {
                 connectivityManager.unregisterNetworkCallback(callback)
             } catch (_: IllegalArgumentException) {
-                // Callback уже мог быть снят системой.
             }
         }
 
@@ -131,10 +136,6 @@ class MainActivity : Activity() {
 
         showStatus("Ожидание Wi-Fi. Подключитесь к сети LEDS.")
 
-        /*
-         * Не требуем INTERNET или VALIDATED:
-         * точка доступа Wemos работает без интернета.
-         */
         val request = NetworkRequest.Builder()
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
             .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
@@ -209,17 +210,12 @@ class MainActivity : Activity() {
 
         val network = wifiNetwork ?: return
 
-        // При ручном переподключении отпускаем старое нажатие.
         dropSocket(graceful = true)
 
         showStatus("Подключение к Wemos: 192.168.4.1…")
 
         val generation = socketGeneration
 
-        /*
-         * SocketFactory именно выбранной Wi-Fi-сети.
-         * Мобильная сеть не используется для подключения к Wemos.
-         */
         val client = OkHttpClient.Builder()
             .socketFactory(network.socketFactory)
             .connectTimeout(4, TimeUnit.SECONDS)
@@ -251,7 +247,7 @@ class MainActivity : Activity() {
 
                     showStatus("Подключено к Wemos. Матрица готова.")
 
-                    // Новое соединение всегда начинается без нажатий.
+                    lastSendAt = System.currentTimeMillis()
                     sendCurrentState()
 
                     handler.removeCallbacks(heartbeatTask)
@@ -367,7 +363,6 @@ class MainActivity : Activity() {
     }
 
     private fun dropSocket(graceful: Boolean = false) {
-        // Все callbacks старого сокета после этого игнорируются.
         socketGeneration++
 
         connected = false
@@ -378,12 +373,12 @@ class MainActivity : Activity() {
         val oldSocket = socket
         socket = null
 
-        // Слушатель может вызваться, но connected уже false.
         matrixView.clearTouch()
         matrixView.isEnabled = false
 
         if (oldSocket != null) {
             if (graceful) {
+                lastSendAt = System.currentTimeMillis()
                 val sent = oldSocket.send(makeStatePacket(-1))
                 val closing = oldSocket.close(1000, "Leaving")
 
