@@ -2,7 +2,6 @@ package com.example.ledmatrix
 
 import android.app.Activity
 import android.app.AlertDialog
-import android.app.Dialog
 import android.content.DialogInterface
 import android.graphics.Color
 import android.net.ConnectivityManager
@@ -13,11 +12,8 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.View
-import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
-import android.widget.LinearLayout
-import android.widget.ListView
 import android.widget.TextView
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -35,6 +31,7 @@ class MainActivity : Activity() {
         private const val HEARTBEAT_MS = 400L
         private const val RECONNECT_MS = 1500L
         private const val SEND_INTERVAL_MS = 10L
+        private const val CYCLE_GAP_MS = 1000L
     }
 
     private lateinit var matrixView: MatrixView
@@ -62,7 +59,6 @@ class MainActivity : Activity() {
     private val lastSentBits = ByteArray(8)
     private var forceSend = false
 
-    // Анимация
     private val frames = mutableListOf<Frame>()
     private var currentFrameIndex = -1
     private var isPlaying = false
@@ -77,13 +73,12 @@ class MainActivity : Activity() {
     private val sendTask = object : Runnable {
         override fun run() {
             if (!started || !connected) return
+            if (isPlaying) return
 
             val currentSocket = socket ?: return
 
             val bits = ByteArray(8)
-            for (i in 0 until 8) {
-                bits[i] = pendingBits[i]
-            }
+            for (i in 0 until 8) bits[i] = pendingBits[i]
 
             val cell = matrixView.activeCell
             if (cell in 0 until 64) {
@@ -92,31 +87,22 @@ class MainActivity : Activity() {
                 bits[row] = (bits[row].toInt() or (1 shl col)).toByte()
             }
 
-            for (i in 0 until 8) {
-                pendingBits[i] = 0
-            }
+            for (i in 0 until 8) pendingBits[i] = 0
 
             var changed = forceSend
             if (!changed) {
                 for (i in 0 until 8) {
-                    if (bits[i] != lastSentBits[i]) {
-                        changed = true
-                        break
-                    }
+                    if (bits[i] != lastSentBits[i]) { changed = true; break }
                 }
             }
 
             if (changed) {
-                for (i in 0 until 8) {
-                    lastSentBits[i] = bits[i]
-                }
+                for (i in 0 until 8) lastSentBits[i] = bits[i]
                 forceSend = false
 
                 val packet = ByteArray(9)
                 packet[0] = 'S'.code.toByte()
-                for (i in 0 until 8) {
-                    packet[1 + i] = bits[i]
-                }
+                for (i in 0 until 8) packet[1 + i] = bits[i]
 
                 val accepted = currentSocket.send(packet.toByteString())
                 if (!accepted) {
@@ -141,21 +127,58 @@ class MainActivity : Activity() {
         }
     }
 
+    // Воспроизведение: кадры идут строго по порядку,
+    // пустые пропускаются, после последнего — пауза 1 сек.
     private val playTask = object : Runnable {
         override fun run() {
             if (!started || !connected || !isPlaying || frames.isEmpty()) {
-                isPlaying = false
+                stopPlayback()
                 return
             }
 
+            // Если дошли до конца списка — пауза 1 сек, затем заново
+            if (playFrameIndex >= frames.size) {
+                playFrameIndex = 0
+                handler.postDelayed(this, CYCLE_GAP_MS)
+                return
+            }
+
+            // Пропускаем пустые кадры
+            while (playFrameIndex < frames.size) {
+                if (frames[playFrameIndex].colors.any { it != 0 }) break
+                playFrameIndex++
+            }
+
+            // Если все оставшиеся пустые — проверяем, есть ли вообще
+            // хоть один непустой кадр
+            if (playFrameIndex >= frames.size) {
+                if (frames.none { it.colors.any { c -> c != 0 } }) {
+                    showStatus("Все кадры пустые — нечего воспроизводить")
+                    stopPlayback()
+                    return
+                }
+                playFrameIndex = 0
+                handler.postDelayed(this, CYCLE_GAP_MS)
+                return
+            }
+
+            // Отправляем кадр
             sendAnimationFrame(playFrameIndex)
 
-            playFrameIndex = (playFrameIndex + 1) % frames.size
+            val nonEmptyCount = frames.count { it.colors.any { it != 0 } }
+            showStatus("Воспроизведение: кадр ${playFrameIndex + 1}/${frames.size} (непустых: $nonEmptyCount)")
+
+            playFrameIndex++
 
             val durationInput = findViewById<EditText>(R.id.durationInput)
             val duration = durationInput.text.toString().toIntOrNull() ?: 200
 
-            handler.postDelayed(this, duration.toLong())
+            if (playFrameIndex >= frames.size) {
+                // Дошли до конца — на следующем тике будет пауза
+                handler.postDelayed(this, CYCLE_GAP_MS)
+            } else {
+                handler.postDelayed(this, duration.toLong())
+            }
         }
     }
 
@@ -192,12 +215,14 @@ class MainActivity : Activity() {
         findViewById<Button>(R.id.tabAnimation).setOnClickListener {
             drawingLayout.visibility = View.GONE
             animationLayout.visibility = View.VISIBLE
-            // В режиме анимации до нажатия Старт ничего не отправляем
             stopPlayback()
             sendClearCommand()
+            if (frames.isEmpty()) {
+                frames.add(Frame())
+                currentFrameIndex = 0
+            }
         }
 
-        // Кнопка переподключения
         findViewById<Button>(R.id.reconnectButton).setOnClickListener {
             if (wifiNetwork != null) {
                 connectSocket()
@@ -206,7 +231,8 @@ class MainActivity : Activity() {
             }
         }
 
-        // Анимация: кнопки
+        // --- Анимация: кнопки ---
+
         findViewById<Button>(R.id.colorButton).setOnClickListener {
             showColorPicker()
         }
@@ -219,14 +245,22 @@ class MainActivity : Activity() {
             animationGrid.clearGrid()
         }
 
+        // Сохранить кадр: сохраняет текущий, создаёт новый пустой,
+        // переключается на него
         findViewById<Button>(R.id.saveFrameButton).setOnClickListener {
-            if (currentFrameIndex >= 0 && currentFrameIndex < frames.size) {
+            if (currentFrameIndex in frames.indices) {
                 frames[currentFrameIndex] = animationGrid.getCurrentFrame()
             } else {
                 frames.add(animationGrid.getCurrentFrame())
-                currentFrameIndex = frames.size - 1
             }
-            showStatus("Кадр ${currentFrameIndex + 1} сохранён. Всего кадров: ${frames.size}")
+
+            // Создаём новый пустой кадр и переключаемся
+            frames.add(Frame())
+            currentFrameIndex = frames.size - 1
+            animationGrid.clearGrid()
+
+            val nonEmpty = frames.count { it.colors.any { it != 0 } }
+            showStatus("Кадр сохранён. Всего: ${frames.size} (непустых: $nonEmpty). Редактируется кадр ${currentFrameIndex + 1}.")
         }
 
         findViewById<Button>(R.id.framesButton).setOnClickListener {
@@ -236,14 +270,12 @@ class MainActivity : Activity() {
         findViewById<Button>(R.id.startButton).setOnClickListener {
             if (isPlaying) {
                 stopPlayback()
-                findViewById<Button>(R.id.startButton).text = "Старт"
             } else {
-                if (frames.isEmpty()) {
-                    showStatus("Нет кадров для анимации")
+                if (frames.none { it.colors.any { it != 0 } }) {
+                    showStatus("Нет непустых кадров для анимации")
                     return@setOnClickListener
                 }
                 startPlayback()
-                findViewById<Button>(R.id.startButton).text = "Стоп"
             }
         }
     }
@@ -262,72 +294,65 @@ class MainActivity : Activity() {
             "Розовый", "Салатовый", "Бирюзовый"
         )
 
-        val builder = AlertDialog.Builder(this)
-        builder.setTitle("Выберите цвет")
-
-        val items = names.map { it as CharSequence }.toTypedArray()
-        builder.setItems(items) { _: DialogInterface, which: Int ->
-            animationGrid.setPaintColor(colors[which])
-        }
-
-        builder.show()
+        AlertDialog.Builder(this)
+            .setTitle("Выберите цвет")
+            .setItems(names) { _: DialogInterface, which: Int ->
+                animationGrid.setPaintColor(colors[which])
+            }
+            .show()
     }
 
     private fun showFramesDialog() {
-        val builder = AlertDialog.Builder(this)
-        builder.setTitle("Кадры (${frames.size})")
-
         if (frames.isEmpty()) {
-            builder.setMessage("Список кадров пуст. Нарисуйте кадр и нажмите «Сохранить».")
-            builder.setPositiveButton("Новый кадр") { _, _ ->
-                animationGrid.clearGrid()
-                frames.add(Frame())
-                currentFrameIndex = frames.size - 1
-                showStatus("Создан новый кадр ${currentFrameIndex + 1}")
-            }
-            builder.setNegativeButton("Закрыть", null)
-            builder.show()
+            AlertDialog.Builder(this)
+                .setTitle("Кадры (0)")
+                .setMessage("Список пуст. Нарисуйте кадр и нажмите «Сохранить».")
+                .setPositiveButton("Новый кадр") { _, _ ->
+                    frames.add(Frame())
+                    currentFrameIndex = 0
+                    animationGrid.clearGrid()
+                    showStatus("Создан новый кадр 1")
+                }
+                .setNegativeButton("Закрыть", null)
+                .show()
             return
         }
 
         val items = frames.indices.map { "Кадр ${it + 1}" }.toTypedArray()
         var selected = if (currentFrameIndex in frames.indices) currentFrameIndex else 0
 
-        builder.setSingleChoiceItems(items, selected) { _, which ->
-            selected = which
-        }
-
-        builder.setPositiveButton("Закрыть", null)
-
-        builder.setNeutralButton("Новый") { _, _ ->
-            animationGrid.clearGrid()
-            frames.add(Frame())
-            currentFrameIndex = frames.size - 1
-            showStatus("Создан новый кадр ${currentFrameIndex + 1}")
-        }
-
-        builder.setNegativeButton("Удалить") { _, _ ->
-            if (selected in frames.indices) {
-                frames.removeAt(selected)
-                if (frames.isEmpty()) {
-                    currentFrameIndex = -1
-                    animationGrid.clearGrid()
-                } else {
-                    currentFrameIndex = (selected - 1).coerceAtLeast(0)
-                    animationGrid.loadFrame(frames[currentFrameIndex])
+        AlertDialog.Builder(this)
+            .setTitle("Кадры (${frames.size})")
+            .setSingleChoiceItems(items, selected) { _, which -> selected = which }
+            .setPositiveButton("Закрыть") { _, _ ->
+                if (selected in frames.indices) {
+                    currentFrameIndex = selected
+                    animationGrid.loadFrame(frames[selected])
                 }
-                showStatus("Кадр удалён. Осталось: ${frames.size}")
             }
-        }
-
-        builder.setOnDismissListener {
-            if (selected in frames.indices) {
-                currentFrameIndex = selected
-                animationGrid.loadFrame(frames[selected])
+            .setNeutralButton("Новый") { _, _ ->
+                frames.add(Frame())
+                currentFrameIndex = frames.size - 1
+                animationGrid.clearGrid()
+                showStatus("Создан новый кадр ${currentFrameIndex + 1}")
             }
-        }
-
-        builder.show()
+            .setNegativeButton("Удалить") { _, _ ->
+                if (selected in frames.indices) {
+                    frames.removeAt(selected)
+                    if (frames.isEmpty()) {
+                        currentFrameIndex = -1
+                        animationGrid.clearGrid()
+                        showStatus("Все кадры удалены")
+                    } else {
+                        currentFrameIndex = (selected - 1).coerceAtLeast(0)
+                        if (currentFrameIndex in frames.indices) {
+                            animationGrid.loadFrame(frames[currentFrameIndex])
+                        }
+                        showStatus("Кадр удалён. Осталось: ${frames.size}")
+                    }
+                }
+            }
+            .show()
     }
 
     private fun startPlayback() {
@@ -335,7 +360,7 @@ class MainActivity : Activity() {
         playFrameIndex = 0
         handler.removeCallbacks(sendTask)
         handler.post(playTask)
-        showStatus("Воспроизведение: ${frames.size} кадров")
+        findViewById<Button>(R.id.startButton).text = "Стоп"
     }
 
     private fun stopPlayback() {
@@ -386,8 +411,7 @@ class MainActivity : Activity() {
         networkCallback?.let { callback ->
             try {
                 connectivityManager.unregisterNetworkCallback(callback)
-            } catch (_: IllegalArgumentException) {
-            }
+            } catch (_: IllegalArgumentException) {}
         }
 
         networkCallback = null
