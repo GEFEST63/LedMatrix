@@ -65,10 +65,6 @@ class MainActivity : Activity() {
 
     private var playSequence = listOf<Int>()
     private var playPos = 0
-
-    // Жёсткий таймлайн для воспроизведения.
-    // postAtTime срабатывает точно в заданное время,
-    // компенсируя задержки выполнения кода и Wi-Fi.
     private var nextPlayTime = 0L
 
     private val reconnectTask = Runnable {
@@ -141,20 +137,19 @@ class MainActivity : Activity() {
                 return
             }
 
-            // Инициализируем таймлайн при первом запуске
             if (nextPlayTime == 0L) {
                 nextPlayTime = SystemClock.uptimeMillis()
             }
 
+            val durationInput = findViewById<EditText>(R.id.durationInput)
+            val duration = durationInput.text.toString().toIntOrNull() ?: 200
+
             val frameIdx = playSequence[playPos]
-            sendAnimationFrame(frameIdx)
+            sendAnimationFrame(frameIdx, duration)
 
             showStatus("Воспроизведение: кадр ${frameIdx + 1}/${frames.size} (${playPos + 1}/${playSequence.size})")
 
             playPos++
-
-            val durationInput = findViewById<EditText>(R.id.durationInput)
-            val duration = durationInput.text.toString().toIntOrNull() ?: 200
 
             if (playPos >= playSequence.size) {
                 playPos = 0
@@ -165,9 +160,6 @@ class MainActivity : Activity() {
                 nextPlayTime += duration.toLong()
             }
 
-            // Планируем строго по таймлайну, а не "через N мс".
-            // Если текущий кадр отправился с задержкой,
-            // следующий уйдёт раньше, выравнивая ритм.
             handler.postAtTime(this, nextPlayTime)
         }
     }
@@ -385,28 +377,29 @@ class MainActivity : Activity() {
         findViewById<Button>(R.id.startButton)?.text = "Старт"
     }
 
-    private fun sendAnimationFrame(index: Int) {
+    // Новый формат: 195 байт
+    // [0] = 'A'
+    // [1..2] = duration (uint16, little-endian)
+    // [3..194] = RGB (64 × 3)
+    private fun sendAnimationFrame(index: Int, durationMs: Int) {
         if (!started || !connected) return
         val currentSocket = socket ?: return
         if (index !in frames.indices) return
 
         val frame = frames[index]
-        val packet = ByteArray(193)
+        val packet = ByteArray(195)
         packet[0] = 'A'.code.toByte()
+        packet[1] = (durationMs and 0xFF).toByte()
+        packet[2] = ((durationMs shr 8) and 0xFF).toByte()
 
         for (i in 0 until 64) {
             val color = frame.colors[i]
-            packet[1 + i * 3] = Color.red(color).toByte()
-            packet[1 + i * 3 + 1] = Color.green(color).toByte()
-            packet[1 + i * 3 + 2] = Color.blue(color).toByte()
+            packet[3 + i * 3] = Color.red(color).toByte()
+            packet[3 + i * 3 + 1] = Color.green(color).toByte()
+            packet[3 + i * 3 + 2] = Color.blue(color).toByte()
         }
 
-        if (!currentSocket.send(packet.toByteString())) {
-            // Очередь отправки OkHttp переполнена — Wi-Fi не успевает.
-            // Сбрасываем таймлайн, чтобы следующий кадр ушёл сразу
-            // и мы не накапливали задержку.
-            nextPlayTime = 0L
-        }
+        currentSocket.send(packet.toByteString())
     }
 
     private fun sendClearCommand() {
