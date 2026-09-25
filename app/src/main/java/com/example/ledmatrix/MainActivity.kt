@@ -11,7 +11,6 @@ import android.net.NetworkRequest
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.os.SystemClock
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
@@ -32,6 +31,7 @@ class MainActivity : Activity() {
         private const val HEARTBEAT_MS = 400L
         private const val RECONNECT_MS = 1500L
         private const val SEND_INTERVAL_MS = 10L
+        private const val MAX_FRAMES = 32
     }
 
     private lateinit var matrixView: MatrixView
@@ -62,10 +62,6 @@ class MainActivity : Activity() {
     private val frames = mutableListOf<Frame>()
     private var currentFrameIndex = -1
     private var isPlaying = false
-
-    private var playSequence = listOf<Int>()
-    private var playPos = 0
-    private var nextPlayTime = 0L
 
     private val reconnectTask = Runnable {
         if (started && wifiNetwork != null) {
@@ -127,40 +123,6 @@ class MainActivity : Activity() {
             if (started && connected) {
                 handler.postDelayed(this, HEARTBEAT_MS)
             }
-        }
-    }
-
-    private val playTask = object : Runnable {
-        override fun run() {
-            if (!started || !connected || !isPlaying || playSequence.isEmpty()) {
-                stopPlayback()
-                return
-            }
-
-            if (nextPlayTime == 0L) {
-                nextPlayTime = SystemClock.uptimeMillis()
-            }
-
-            val durationInput = findViewById<EditText>(R.id.durationInput)
-            val duration = durationInput.text.toString().toIntOrNull() ?: 200
-
-            val frameIdx = playSequence[playPos]
-            sendAnimationFrame(frameIdx, duration)
-
-            showStatus("Воспроизведение: кадр ${frameIdx + 1}/${frames.size} (${playPos + 1}/${playSequence.size})")
-
-            playPos++
-
-            if (playPos >= playSequence.size) {
-                playPos = 0
-                val delayInput = findViewById<EditText>(R.id.delayInput)
-                val delay = delayInput.text.toString().toIntOrNull() ?: 1000
-                nextPlayTime += delay.toLong()
-            } else {
-                nextPlayTime += duration.toLong()
-            }
-
-            handler.postAtTime(this, nextPlayTime)
         }
     }
 
@@ -267,7 +229,6 @@ class MainActivity : Activity() {
         findViewById<Button>(R.id.startButton).setOnClickListener {
             if (isPlaying) {
                 stopPlayback()
-                sendClearCommand()
             } else {
                 startPlayback()
             }
@@ -349,65 +310,92 @@ class MainActivity : Activity() {
             .show()
     }
 
+    // --- Загрузка и запуск анимации ---
+
     private fun startPlayback() {
-        playSequence = frames.indices
+        val nonEmpty = frames.indices
             .filter { frames[it].colors.any { c -> c != 0 } }
             .toList()
 
-        if (playSequence.isEmpty()) {
+        if (nonEmpty.isEmpty()) {
             showStatus("Нет непустых кадров для анимации")
             return
         }
 
+        if (nonEmpty.size > MAX_FRAMES) {
+            showStatus("Слишком много кадров (макс. $MAX_FRAMES)")
+            return
+        }
+
+        val currentSocket = socket
+        if (currentSocket == null || !connected || !started) {
+            showStatus("Нет подключения к матрице")
+            return
+        }
+
+        val durationInput = findViewById<EditText>(R.id.durationInput)
+        val duration = (durationInput.text.toString().toIntOrNull() ?: 200)
+            .coerceIn(20, 65535)
+        val delayInput = findViewById<EditText>(R.id.delayInput)
+        val delay = (delayInput.text.toString().toIntOrNull() ?: 1000)
+            .coerceIn(0, 65535)
+
+        // 1. Команда 'B' — начало загрузки (ESP8266 очищает хранилище)
+        if (!currentSocket.send(byteArrayOf('B'.code.toByte()).toByteString())) {
+            showStatus("Ошибка: очередь отправки переполнена")
+            return
+        }
+
+        // 2. Загружаем каждый кадр командой 'A'
+        for (i in nonEmpty.indices) {
+            val frame = frames[nonEmpty[i]]
+            val packet = ByteArray(195)
+            packet[0] = 'A'.code.toByte()
+            packet[1] = (duration and 0xFF).toByte()
+            packet[2] = ((duration shr 8) and 0xFF).toByte()
+            for (j in 0 until 64) {
+                val color = frame.colors[j]
+                packet[3 + j * 3] = Color.red(color).toByte()
+                packet[3 + j * 3 + 1] = Color.green(color).toByte()
+                packet[3 + j * 3 + 2] = Color.blue(color).toByte()
+            }
+            if (!currentSocket.send(packet.toByteString())) {
+                showStatus("Ошибка загрузки кадра ${i + 1}")
+                return
+            }
+        }
+
+        // 3. Команда 'P' — старт автономного воспроизведения
+        val playPacket = ByteArray(5)
+        playPacket[0] = 'P'.code.toByte()
+        playPacket[1] = (duration and 0xFF).toByte()
+        playPacket[2] = ((duration shr 8) and 0xFF).toByte()
+        playPacket[3] = (delay and 0xFF).toByte()
+        playPacket[4] = ((delay shr 8) and 0xFF).toByte()
+        currentSocket.send(playPacket.toByteString())
+
         isPlaying = true
-        playPos = 0
-        nextPlayTime = 0L
-
-        handler.removeCallbacks(playTask)
-        handler.removeCallbacks(sendTask)
-        handler.post(playTask)
-
         findViewById<Button>(R.id.startButton).text = "Стоп"
+
+        handler.removeCallbacks(sendTask)
+
+        showStatus("Воспроизведение: ${nonEmpty.size} кадров, $duration мс/кадр, пауза $delay мс")
     }
 
     private fun stopPlayback() {
         isPlaying = false
-        handler.removeCallbacks(playTask)
-        nextPlayTime = 0L
         findViewById<Button>(R.id.startButton)?.text = "Старт"
-    }
 
-    // Новый формат: 195 байт
-    // [0] = 'A'
-    // [1..2] = duration (uint16, little-endian)
-    // [3..194] = RGB (64 × 3)
-    private fun sendAnimationFrame(index: Int, durationMs: Int) {
-        if (!started || !connected) return
-        val currentSocket = socket ?: return
-        if (index !in frames.indices) return
-
-        val frame = frames[index]
-        val packet = ByteArray(195)
-        packet[0] = 'A'.code.toByte()
-        packet[1] = (durationMs and 0xFF).toByte()
-        packet[2] = ((durationMs shr 8) and 0xFF).toByte()
-
-        for (i in 0 until 64) {
-            val color = frame.colors[i]
-            packet[3 + i * 3] = Color.red(color).toByte()
-            packet[3 + i * 3 + 1] = Color.green(color).toByte()
-            packet[3 + i * 3 + 2] = Color.blue(color).toByte()
+        // Команда 'X' — стоп на ESP8266
+        if (connected && started) {
+            socket?.send(byteArrayOf('X'.code.toByte()).toByteString())
         }
-
-        currentSocket.send(packet.toByteString())
     }
 
     private fun sendClearCommand() {
         if (!started || !connected) return
         val currentSocket = socket ?: return
-        val packet = ByteArray(1)
-        packet[0] = 'C'.code.toByte()
-        currentSocket.send(packet.toByteString())
+        currentSocket.send(byteArrayOf('C'.code.toByte()).toByteString())
     }
 
     override fun onStart() {
