@@ -48,4 +48,24 @@ class AnimationGridView @JvmOverloads constructor(
         color = Color.rgb(80, 80, 80)
         style = Paint.Style.STROKE
         strokeWidth = 1f * density
-   
+    }
+
+    private val cellPaint = Paint().apply {
+        style = Paint.Style.FILL
+    }
+
+    init {
+        isClickable = true
+    }
+
+    fun setPaintColor(color: Int) {
+        paintColor = color
+        isErasing = false
+    }
+
+    fun setErasing(erasing: Boolean) {
+        isErasing = erasing
+    }
+
+    fun loadFrame(frame: Frame) {
+        System.arraycopy(frame.colors, 0, colors, 0,
