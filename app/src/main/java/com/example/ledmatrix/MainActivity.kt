@@ -1,6 +1,10 @@
 package com.example.ledmatrix
 
 import android.app.Activity
+import android.app.AlertDialog
+import android.app.Dialog
+import android.content.DialogInterface
+import android.graphics.Color
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -8,7 +12,12 @@ import android.net.NetworkRequest
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.View
+import android.widget.ArrayAdapter
 import android.widget.Button
+import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.ListView
 import android.widget.TextView
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -29,8 +38,11 @@ class MainActivity : Activity() {
     }
 
     private lateinit var matrixView: MatrixView
+    private lateinit var animationGrid: AnimationGridView
     private lateinit var statusText: TextView
     private lateinit var connectivityManager: ConnectivityManager
+    private lateinit var drawingLayout: View
+    private lateinit var animationLayout: View
 
     private val handler = Handler(Looper.getMainLooper())
 
@@ -46,16 +58,15 @@ class MainActivity : Activity() {
     private var networkGeneration = 0L
     private var socketGeneration = 0L
 
-    // Битовая маска ячеек, затронутых с последней отправки.
-    // 8 байт — по одному на строку, биты — столбцы.
     private val pendingBits = ByteArray(8)
-
-    // Последнее отправленное состояние — чтобы не слать
-    // одинаковые пакеты, когда палец неподвижен.
     private val lastSentBits = ByteArray(8)
-
-    // Флаг: принудительно отправить (heartbeat, отпускание).
     private var forceSend = false
+
+    // Анимация
+    private val frames = mutableListOf<Frame>()
+    private var currentFrameIndex = -1
+    private var isPlaying = false
+    private var playFrameIndex = 0
 
     private val reconnectTask = Runnable {
         if (started && wifiNetwork != null) {
@@ -63,15 +74,12 @@ class MainActivity : Activity() {
         }
     }
 
-    // Каждые 10 мс: собираем пакет из pendingBits + activeCell,
-    // отправляем только если состояние изменилось.
     private val sendTask = object : Runnable {
         override fun run() {
             if (!started || !connected) return
 
             val currentSocket = socket ?: return
 
-            // Собираем биты: затронутые + активная ячейка.
             val bits = ByteArray(8)
             for (i in 0 until 8) {
                 bits[i] = pendingBits[i]
@@ -84,12 +92,10 @@ class MainActivity : Activity() {
                 bits[row] = (bits[row].toInt() or (1 shl col)).toByte()
             }
 
-            // Очищаем накопленные биты.
             for (i in 0 until 8) {
                 pendingBits[i] = 0
             }
 
-            // Проверяем, изменилось ли состояние.
             var changed = forceSend
             if (!changed) {
                 for (i in 0 until 8) {
@@ -114,31 +120,42 @@ class MainActivity : Activity() {
 
                 val accepted = currentSocket.send(packet.toByteString())
                 if (!accepted) {
-                    connectionFailed(
-                        socketGeneration,
-                        "Не удалось отправить состояние."
-                    )
+                    connectionFailed(socketGeneration, "Не удалось отправить состояние.")
                     return
                 }
             }
 
-            if (started && connected) {
+            if (started && connected && !isPlaying) {
                 handler.postDelayed(this, SEND_INTERVAL_MS)
             }
         }
     }
 
-    // Heartbeat: раз в 400 мс заставляем sendTask отправить
-    // текущее состояние (для проверки связи и переподключений).
     private val heartbeatTask = object : Runnable {
         override fun run() {
             if (!started || !connected) return
-
             forceSend = true
-
             if (started && connected) {
                 handler.postDelayed(this, HEARTBEAT_MS)
             }
+        }
+    }
+
+    private val playTask = object : Runnable {
+        override fun run() {
+            if (!started || !connected || !isPlaying || frames.isEmpty()) {
+                isPlaying = false
+                return
+            }
+
+            sendAnimationFrame(playFrameIndex)
+
+            playFrameIndex = (playFrameIndex + 1) % frames.size
+
+            val durationInput = findViewById<EditText>(R.id.durationInput)
+            val duration = durationInput.text.toString().toIntOrNull() ?: 200
+
+            handler.postDelayed(this, duration.toLong())
         }
     }
 
@@ -147,42 +164,215 @@ class MainActivity : Activity() {
         setContentView(R.layout.activity_main)
 
         matrixView = findViewById(R.id.matrixView)
+        animationGrid = findViewById(R.id.animationGridView)
         statusText = findViewById(R.id.statusText)
-
-        connectivityManager =
-            getSystemService(ConnectivityManager::class.java)
+        drawingLayout = findViewById(R.id.drawingLayout)
+        animationLayout = findViewById(R.id.animationLayout)
+        connectivityManager = getSystemService(ConnectivityManager::class.java)
 
         matrixView.isEnabled = false
 
-        // Каждое изменение ячейки добавляем в битовую маску.
-        // Флаг forceSend гарантирует, что sendTask отправит
-        // пакет в ближайший тик (<=10 мс).
         matrixView.onCellChanged = {
             val cell = matrixView.activeCell
             if (cell in 0 until 64) {
                 val row = cell / 8
                 val col = cell % 8
-                pendingBits[row] =
-                    (pendingBits[row].toInt() or (1 shl col)).toByte()
+                pendingBits[row] = (pendingBits[row].toInt() or (1 shl col)).toByte()
             }
             forceSend = true
         }
 
+        // Вкладки
+        findViewById<Button>(R.id.tabDrawing).setOnClickListener {
+            drawingLayout.visibility = View.VISIBLE
+            animationLayout.visibility = View.GONE
+            stopPlayback()
+        }
+
+        findViewById<Button>(R.id.tabAnimation).setOnClickListener {
+            drawingLayout.visibility = View.GONE
+            animationLayout.visibility = View.VISIBLE
+            // В режиме анимации до нажатия Старт ничего не отправляем
+            stopPlayback()
+            sendClearCommand()
+        }
+
+        // Кнопка переподключения
         findViewById<Button>(R.id.reconnectButton).setOnClickListener {
             if (wifiNetwork != null) {
                 connectSocket()
             } else {
-                showStatus(
-                    "Нет доступной Wi-Fi-сети. " +
-                        "Подключитесь к LEDS в настройках телефона."
-                )
+                showStatus("Нет доступной Wi-Fi-сети. Подключитесь к LEDS.")
+            }
+        }
+
+        // Анимация: кнопки
+        findViewById<Button>(R.id.colorButton).setOnClickListener {
+            showColorPicker()
+        }
+
+        findViewById<Button>(R.id.eraserButton).setOnClickListener {
+            animationGrid.setErasing(true)
+        }
+
+        findViewById<Button>(R.id.clearButton).setOnClickListener {
+            animationGrid.clearGrid()
+        }
+
+        findViewById<Button>(R.id.saveFrameButton).setOnClickListener {
+            if (currentFrameIndex >= 0 && currentFrameIndex < frames.size) {
+                frames[currentFrameIndex] = animationGrid.getCurrentFrame()
+            } else {
+                frames.add(animationGrid.getCurrentFrame())
+                currentFrameIndex = frames.size - 1
+            }
+            showStatus("Кадр ${currentFrameIndex + 1} сохранён. Всего кадров: ${frames.size}")
+        }
+
+        findViewById<Button>(R.id.framesButton).setOnClickListener {
+            showFramesDialog()
+        }
+
+        findViewById<Button>(R.id.startButton).setOnClickListener {
+            if (isPlaying) {
+                stopPlayback()
+                findViewById<Button>(R.id.startButton).text = "Старт"
+            } else {
+                if (frames.isEmpty()) {
+                    showStatus("Нет кадров для анимации")
+                    return@setOnClickListener
+                }
+                startPlayback()
+                findViewById<Button>(R.id.startButton).text = "Стоп"
             }
         }
     }
 
+    private fun showColorPicker() {
+        val colors = intArrayOf(
+            Color.RED, Color.parseColor("#FF6600"), Color.parseColor("#FFCC00"),
+            Color.GREEN, Color.parseColor("#00CCFF"), Color.BLUE,
+            Color.parseColor("#6633FF"), Color.MAGENTA, Color.WHITE,
+            Color.parseColor("#FF6699"), Color.parseColor("#99FF66"), Color.parseColor("#66FFFF")
+        )
+        val names = arrayOf(
+            "Красный", "Оранжевый", "Жёлтый",
+            "Зелёный", "Голубой", "Синий",
+            "Фиолетовый", "Пурпурный", "Белый",
+            "Розовый", "Салатовый", "Бирюзовый"
+        )
+
+        val builder = AlertDialog.Builder(this)
+        builder.setTitle("Выберите цвет")
+
+        val items = names.map { it as CharSequence }.toTypedArray()
+        builder.setItems(items) { _: DialogInterface, which: Int ->
+            animationGrid.setPaintColor(colors[which])
+        }
+
+        builder.show()
+    }
+
+    private fun showFramesDialog() {
+        val builder = AlertDialog.Builder(this)
+        builder.setTitle("Кадры (${frames.size})")
+
+        if (frames.isEmpty()) {
+            builder.setMessage("Список кадров пуст. Нарисуйте кадр и нажмите «Сохранить».")
+            builder.setPositiveButton("Новый кадр") { _, _ ->
+                animationGrid.clearGrid()
+                frames.add(Frame())
+                currentFrameIndex = frames.size - 1
+                showStatus("Создан новый кадр ${currentFrameIndex + 1}")
+            }
+            builder.setNegativeButton("Закрыть", null)
+            builder.show()
+            return
+        }
+
+        val items = frames.indices.map { "Кадр ${it + 1}" }.toTypedArray()
+        var selected = if (currentFrameIndex in frames.indices) currentFrameIndex else 0
+
+        builder.setSingleChoiceItems(items, selected) { _, which ->
+            selected = which
+        }
+
+        builder.setPositiveButton("Закрыть", null)
+
+        builder.setNeutralButton("Новый") { _, _ ->
+            animationGrid.clearGrid()
+            frames.add(Frame())
+            currentFrameIndex = frames.size - 1
+            showStatus("Создан новый кадр ${currentFrameIndex + 1}")
+        }
+
+        builder.setNegativeButton("Удалить") { _, _ ->
+            if (selected in frames.indices) {
+                frames.removeAt(selected)
+                if (frames.isEmpty()) {
+                    currentFrameIndex = -1
+                    animationGrid.clearGrid()
+                } else {
+                    currentFrameIndex = (selected - 1).coerceAtLeast(0)
+                    animationGrid.loadFrame(frames[currentFrameIndex])
+                }
+                showStatus("Кадр удалён. Осталось: ${frames.size}")
+            }
+        }
+
+        builder.setOnDismissListener {
+            if (selected in frames.indices) {
+                currentFrameIndex = selected
+                animationGrid.loadFrame(frames[selected])
+            }
+        }
+
+        builder.show()
+    }
+
+    private fun startPlayback() {
+        isPlaying = true
+        playFrameIndex = 0
+        handler.removeCallbacks(sendTask)
+        handler.post(playTask)
+        showStatus("Воспроизведение: ${frames.size} кадров")
+    }
+
+    private fun stopPlayback() {
+        isPlaying = false
+        handler.removeCallbacks(playTask)
+        findViewById<Button>(R.id.startButton)?.text = "Старт"
+    }
+
+    private fun sendAnimationFrame(index: Int) {
+        if (!started || !connected) return
+        val currentSocket = socket ?: return
+        if (index !in frames.indices) return
+
+        val frame = frames[index]
+        val packet = ByteArray(193)
+        packet[0] = 'A'.code.toByte()
+
+        for (i in 0 until 64) {
+            val color = frame.colors[i]
+            packet[1 + i * 3] = Color.red(color).toByte()
+            packet[1 + i * 3 + 1] = Color.green(color).toByte()
+            packet[1 + i * 3 + 2] = Color.blue(color).toByte()
+        }
+
+        currentSocket.send(packet.toByteString())
+    }
+
+    private fun sendClearCommand() {
+        if (!started || !connected) return
+        val currentSocket = socket ?: return
+        val packet = ByteArray(1)
+        packet[0] = 'C'.code.toByte()
+        currentSocket.send(packet.toByteString())
+    }
+
     override fun onStart() {
         super.onStart()
-
         started = true
         startWifiRequest()
     }
@@ -190,7 +380,7 @@ class MainActivity : Activity() {
     override fun onStop() {
         started = false
         networkGeneration++
-
+        stopPlayback()
         dropSocket(graceful = true)
 
         networkCallback?.let { callback ->
@@ -202,7 +392,6 @@ class MainActivity : Activity() {
 
         networkCallback = null
         wifiNetwork = null
-
         super.onStop()
     }
 
@@ -212,7 +401,6 @@ class MainActivity : Activity() {
 
     private fun startWifiRequest() {
         val generation = ++networkGeneration
-
         showStatus("Ожидание Wi-Fi. Подключитесь к сети LEDS.")
 
         val request = NetworkRequest.Builder()
@@ -221,13 +409,9 @@ class MainActivity : Activity() {
             .build()
 
         val callback = object : ConnectivityManager.NetworkCallback() {
-
             override fun onAvailable(network: Network) {
                 handler.post {
-                    if (!started || generation != networkGeneration) {
-                        return@post
-                    }
-
+                    if (!started || generation != networkGeneration) return@post
                     if (wifiNetwork != network) {
                         wifiNetwork = network
                         connectSocket()
@@ -237,33 +421,21 @@ class MainActivity : Activity() {
 
             override fun onLost(network: Network) {
                 handler.post {
-                    if (!started || generation != networkGeneration) {
-                        return@post
-                    }
-
+                    if (!started || generation != networkGeneration) return@post
                     if (wifiNetwork == network) {
                         wifiNetwork = null
                         dropSocket()
-
-                        showStatus(
-                            "Wi-Fi потерян. Подключитесь к сети LEDS."
-                        )
+                        showStatus("Wi-Fi потерян. Подключитесь к сети LEDS.")
                     }
                 }
             }
 
             override fun onUnavailable() {
                 handler.post {
-                    if (!started || generation != networkGeneration) {
-                        return@post
-                    }
-
+                    if (!started || generation != networkGeneration) return@post
                     wifiNetwork = null
                     dropSocket()
-
-                    showStatus(
-                        "Wi-Fi недоступен. Проверьте подключение к LEDS."
-                    )
+                    showStatus("Wi-Fi недоступен. Проверьте подключение к LEDS.")
                 }
             }
         }
@@ -274,23 +446,15 @@ class MainActivity : Activity() {
             connectivityManager.requestNetwork(request, callback)
         } catch (exception: RuntimeException) {
             networkCallback = null
-
-            showStatus(
-                "Не удалось запросить Wi-Fi: " +
-                    (exception.message ?: exception.javaClass.simpleName)
-            )
+            showStatus("Не удалось запросить Wi-Fi: ${exception.message ?: exception.javaClass.simpleName}")
         }
     }
 
     private fun connectSocket() {
-        if (!started) {
-            return
-        }
-
+        if (!started) return
         val network = wifiNetwork ?: return
 
         dropSocket(graceful = true)
-
         showStatus("Подключение к Wemos: 192.168.4.1…")
 
         val generation = socketGeneration
@@ -305,16 +469,10 @@ class MainActivity : Activity() {
 
         httpClient = client
 
-        val request = Request.Builder()
-            .url(SOCKET_URL)
-            .build()
+        val request = Request.Builder().url(SOCKET_URL).build()
 
         val listener = object : WebSocketListener() {
-
-            override fun onOpen(
-                webSocket: WebSocket,
-                response: Response
-            ) {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
                 handler.post {
                     if (!started || generation != socketGeneration) {
                         webSocket.cancel()
@@ -323,10 +481,8 @@ class MainActivity : Activity() {
 
                     connected = true
                     matrixView.isEnabled = true
-
                     showStatus("Подключено к Wemos. Матрица готова.")
 
-                    // Сбрасываем состояние и форсируем отправку.
                     for (i in 0 until 8) {
                         pendingBits[i] = 0
                         lastSentBits[i] = 0
@@ -343,68 +499,31 @@ class MainActivity : Activity() {
                 }
             }
 
-            override fun onClosing(
-                webSocket: WebSocket,
-                code: Int,
-                reason: String
-            ) {
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
                 webSocket.close(code, reason)
-
-                handler.post {
-                    connectionFailed(
-                        generation,
-                        "Контроллер закрыл соединение."
-                    )
-                }
+                handler.post { connectionFailed(generation, "Контроллер закрыл соединение.") }
             }
 
-            override fun onClosed(
-                webSocket: WebSocket,
-                code: Int,
-                reason: String
-            ) {
-                handler.post {
-                    connectionFailed(
-                        generation,
-                        "Соединение закрыто."
-                    )
-                }
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                handler.post { connectionFailed(generation, "Соединение закрыто.") }
             }
 
-            override fun onFailure(
-                webSocket: WebSocket,
-                throwable: Throwable,
-                response: Response?
-            ) {
-                handler.post {
-                    connectionFailed(
-                        generation,
-                        "Нет связи с Wemos. Проверьте сеть LEDS."
-                    )
-                }
+            override fun onFailure(webSocket: WebSocket, throwable: Throwable, response: Response?) {
+                handler.post { connectionFailed(generation, "Нет связи с Wemos. Проверьте сеть LEDS.") }
             }
         }
 
         socket = client.newWebSocket(request, listener)
     }
 
-    private fun connectionFailed(
-        generation: Long,
-        message: String
-    ) {
-        if (!started || generation != socketGeneration) {
-            return
-        }
+    private fun connectionFailed(generation: Long, message: String) {
+        if (!started || generation != socketGeneration) return
 
         dropSocket()
 
         if (wifiNetwork != null) {
             showStatus("$message Повторное подключение…")
-
-            handler.postDelayed(
-                reconnectTask,
-                RECONNECT_MS
-            )
+            handler.postDelayed(reconnectTask, RECONNECT_MS)
         } else {
             showStatus("Подключитесь к Wi-Fi LEDS.")
         }
@@ -412,7 +531,6 @@ class MainActivity : Activity() {
 
     private fun dropSocket(graceful: Boolean = false) {
         socketGeneration++
-
         connected = false
 
         handler.removeCallbacks(heartbeatTask)
@@ -425,7 +543,6 @@ class MainActivity : Activity() {
         matrixView.clearTouch()
         matrixView.isEnabled = false
 
-        // Сбрасываем маски.
         for (i in 0 until 8) {
             pendingBits[i] = 0
             lastSentBits[i] = 0
@@ -434,15 +551,11 @@ class MainActivity : Activity() {
 
         if (oldSocket != null) {
             if (graceful) {
-                // Отправляем пустой пакет (все ячейки отпущены).
                 val emptyPacket = ByteArray(9)
                 emptyPacket[0] = 'S'.code.toByte()
                 val sent = oldSocket.send(emptyPacket.toByteString())
                 val closing = oldSocket.close(1000, "Leaving")
-
-                if (!sent || !closing) {
-                    oldSocket.cancel()
-                }
+                if (!sent || !closing) oldSocket.cancel()
             } else {
                 oldSocket.cancel()
             }
