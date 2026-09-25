@@ -273,17 +273,25 @@ class MainActivity : Activity() {
         return
     }
 
-    val items = frames.indices.map { "Кадр ${it + 1}" }.toTypedArray()
+    // Добавляем специальный элемент в конец списка: «Удалить все кадры»
+    val items = frames.indices.map { "Кадр ${it + 1}" }.toMutableList()
+    items.add("Удалить все кадры")
+
     var selected = if (currentFrameIndex in frames.indices) currentFrameIndex else 0
 
     AlertDialog.Builder(this)
         .setTitle("Кадры (${frames.size})")
-        .setSingleChoiceItems(items, selected) { _, which -> selected = which }
+        // Показываем список, включая пункт «Удалить все кадры» в конце
+        .setSingleChoiceItems(items.toTypedArray(), selected) { _, which ->
+            selected = which
+        }
         .setPositiveButton("Закрыть") { _, _ ->
+            // Если выбран обычный кадр — переключаемся на него
             if (selected in frames.indices) {
                 currentFrameIndex = selected
                 animationGrid.loadFrame(frames[selected])
             }
+            // Если выбран «Удалить все» — ничего не делаем здесь, это обрабатывается в Negative
         }
         .setNeutralButton("Новый") { _, _ ->
             frames.add(Frame())
@@ -291,85 +299,36 @@ class MainActivity : Activity() {
             animationGrid.clearGrid()
             showStatus("Создан новый кадр ${currentFrameIndex + 1}")
         }
-        // Кнопка «Удалить выбранный» — оставляем как была
+        // Кнопка «Удалить выбранный» (для обычных кадров)
         .setNegativeButton("Удалить") { _, _ ->
-            if (selected in frames.indices) {
-                frames.removeAt(selected)
-                if (frames.isEmpty()) {
-                    currentFrameIndex = -1
-                    animationGrid.clearGrid()
-                    showStatus("Все кадры удалены")
-                } else {
-                    // После удаления выбираем предыдущий или первый кадр
-                    currentFrameIndex = (selected - 1).coerceAtLeast(0)
-                    if (currentFrameIndex in frames.indices) {
-                        animationGrid.loadFrame(frames[currentFrameIndex])
-                    }
-                    showStatus("Кадр удалён. Осталось: ${frames.size}")
-                }
-            }
-        }
-        // НОВАЯ КНОПКА: «Удалить все»
-        .setCustomTitle(TextView(this).apply {
-            text = "Кадры (${frames.size})"
-            textSize = 18f
-            setPadding(20, 20, 20, 10)
-        })
-        // В стандартном AlertDialog нет 4-й кнопки, поэтому делаем хитрость:
-        // добавляем «Удалить все» как отдельную кнопку в layout или через setView.
-        // Самый простой и чистый способ — добавить её как ещё одну neutral-кнопку,
-        // но у AlertDialog только 3 кнопки. Поэтому сделаем так:
-        .show().also { dialog ->
-            // Добавляем четвёртую кнопку вручную в футер диалога
-            val layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
-            layoutParams.topMargin = 16
-
-            val deleteAllBtn = Button(this).apply {
-                text = "Удалить все"
-                setTextColor(Color.RED)
-                setBackgroundColor(Color.TRANSPARENT)
-                textAlignment = View.TEXT_ALIGNMENT_CENTER
-                setOnClickListener {
-                    dialog.dismiss()
+            when {
+                selected == items.lastIndex -> {
+                    // Выбран пункт «Удалить все кадры»
                     frames.clear()
                     currentFrameIndex = -1
                     animationGrid.clearGrid()
                     showStatus("Все кадры удалены.")
                 }
-            }
-
-            // Ищем корневой layout диалога, чтобы добавить кнопку
-            val window = dialog.window
-            if (window != null) {
-                val decorView = window.decorView
-                val rootView = decorView.findViewById<View>(android.R.id.content)
-                // Проходим по иерархии, чтобы найти контейнер кнопок
-                fun findButtonContainer(view: View?): ViewGroup? {
-                    if (view is ViewGroup) {
-                        for (i in 0 until view.childCount) {
-                            val child = view.getChildAt(i)
-                            if (child is ViewGroup &&
-                                (child.tag as? String == "alertContent" ||
-                                 child.toString().contains("ButtonBar"))
-                            ) {
-                                return child
-                            }
-                            val found = findButtonContainer(child)
-                            if (found != null) return found
+                selected in frames.indices -> {
+                    // Удаляем один кадр
+                    frames.removeAt(selected)
+                    if (frames.isEmpty()) {
+                        currentFrameIndex = -1
+                        animationGrid.clearGrid()
+                        showStatus("Последний кадр удалён. Список пуст.")
+                    } else {
+                        // Выбираем предыдущий кадр или первый
+                        val newIndex = (selected - 1).coerceAtLeast(0)
+                        if (newIndex in frames.indices) {
+                            currentFrameIndex = newIndex
+                            animationGrid.loadFrame(frames[newIndex])
                         }
+                        showStatus("Кадр удалён. Осталось: ${frames.size}")
                     }
-                    return null
-                }
-
-                val buttonContainer = findButtonContainer(rootView)
-                if (buttonContainer != null) {
-                    buttonContainer.addView(deleteAllBtn, layoutParams)
                 }
             }
         }
+        .show()
 }
 
 
