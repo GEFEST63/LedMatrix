@@ -11,6 +11,7 @@ import android.net.NetworkRequest
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
@@ -64,6 +65,11 @@ class MainActivity : Activity() {
 
     private var playSequence = listOf<Int>()
     private var playPos = 0
+
+    // Жёсткий таймлайн для воспроизведения.
+    // postAtTime срабатывает точно в заданное время,
+    // компенсируя задержки выполнения кода и Wi-Fi.
+    private var nextPlayTime = 0L
 
     private val reconnectTask = Runnable {
         if (started && wifiNetwork != null) {
@@ -135,6 +141,11 @@ class MainActivity : Activity() {
                 return
             }
 
+            // Инициализируем таймлайн при первом запуске
+            if (nextPlayTime == 0L) {
+                nextPlayTime = SystemClock.uptimeMillis()
+            }
+
             val frameIdx = playSequence[playPos]
             sendAnimationFrame(frameIdx)
 
@@ -149,10 +160,15 @@ class MainActivity : Activity() {
                 playPos = 0
                 val delayInput = findViewById<EditText>(R.id.delayInput)
                 val delay = delayInput.text.toString().toIntOrNull() ?: 1000
-                handler.postDelayed(this, delay.toLong())
+                nextPlayTime += delay.toLong()
             } else {
-                handler.postDelayed(this, duration.toLong())
+                nextPlayTime += duration.toLong()
             }
+
+            // Планируем строго по таймлайну, а не "через N мс".
+            // Если текущий кадр отправился с задержкой,
+            // следующий уйдёт раньше, выравнивая ритм.
+            handler.postAtTime(this, nextPlayTime)
         }
     }
 
@@ -179,16 +195,13 @@ class MainActivity : Activity() {
             forceSend = true
         }
 
-        // --- Вкладка "Рисование" ---
         findViewById<Button>(R.id.tabDrawing).setOnClickListener {
             drawingLayout.visibility = View.VISIBLE
             animationLayout.visibility = View.GONE
             stopPlayback()
 
-            // Сбрасываем режим анимации на ESP8266.
             sendClearCommand()
 
-            // Сбрасываем состояние рисования.
             for (i in 0 until 8) {
                 pendingBits[i] = 0
                 lastSentBits[i] = 0
@@ -196,8 +209,6 @@ class MainActivity : Activity() {
             forceSend = true
             matrixView.clearTouch()
 
-            // Перезапускаем sendTask — без этого
-            // режим рисования не работает после анимации.
             if (connected && started) {
                 handler.removeCallbacks(sendTask)
                 handler.postDelayed(sendTask, SEND_INTERVAL_MS)
@@ -206,16 +217,13 @@ class MainActivity : Activity() {
             showStatus("Режим рисования.")
         }
 
-        // --- Вкладка "Анимации" ---
         findViewById<Button>(R.id.tabAnimation).setOnClickListener {
             drawingLayout.visibility = View.GONE
             animationLayout.visibility = View.VISIBLE
             stopPlayback()
 
-            // Останавливаем sendTask рисования.
             handler.removeCallbacks(sendTask)
 
-            // Сбрасываем матрицу.
             sendClearCommand()
 
             if (frames.isEmpty()) {
@@ -233,7 +241,6 @@ class MainActivity : Activity() {
             }
         }
 
-        // --- Анимация: кнопки ---
         findViewById<Button>(R.id.colorButton).setOnClickListener {
             showColorPicker()
         }
@@ -362,6 +369,7 @@ class MainActivity : Activity() {
 
         isPlaying = true
         playPos = 0
+        nextPlayTime = 0L
 
         handler.removeCallbacks(playTask)
         handler.removeCallbacks(sendTask)
@@ -373,6 +381,7 @@ class MainActivity : Activity() {
     private fun stopPlayback() {
         isPlaying = false
         handler.removeCallbacks(playTask)
+        nextPlayTime = 0L
         findViewById<Button>(R.id.startButton)?.text = "Старт"
     }
 
@@ -392,7 +401,12 @@ class MainActivity : Activity() {
             packet[1 + i * 3 + 2] = Color.blue(color).toByte()
         }
 
-        currentSocket.send(packet.toByteString())
+        if (!currentSocket.send(packet.toByteString())) {
+            // Очередь отправки OkHttp переполнена — Wi-Fi не успевает.
+            // Сбрасываем таймлайн, чтобы следующий кадр ушёл сразу
+            // и мы не накапливали задержку.
+            nextPlayTime = 0L
+        }
     }
 
     private fun sendClearCommand() {
