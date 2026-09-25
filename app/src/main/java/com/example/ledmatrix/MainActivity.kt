@@ -258,91 +258,39 @@ class MainActivity : Activity() {
     }
 
     private fun showFramesDialog() {
-    if (frames.isEmpty()) {
-        AlertDialog.Builder(this)
-            .setTitle("Кадры (0)")
-            .setMessage("Список пуст. Нарисуйте кадр и нажмите «Сохранить».")
-            .setPositiveButton("Новый кадр") { _, _ ->
-                frames.add(Frame())
-                currentFrameIndex = 0
-                animationGrid.clearGrid()
-                showStatus("Создан новый кадр 1")
-            }
-            .setNegativeButton("Закрыть", null)
-            .show()
-        return
-    }
-
-    // Добавляем специальный элемент в конец списка: «Удалить все кадры»
-    val items = frames.indices.map { "Кадр ${it + 1}" }.toMutableList()
-    items.add("Удалить все кадры")
-
-    var selected = if (currentFrameIndex in frames.indices) currentFrameIndex else 0
-
-    AlertDialog.Builder(this)
-        .setTitle("Кадры (${frames.size})")
-        // Показываем список, включая пункт «Удалить все кадры» в конце
-        .setSingleChoiceItems(items.toTypedArray(), selected) { _, which ->
-            selected = which
-        }
-        .setPositiveButton("Закрыть") { _, _ ->
-            // Если выбран обычный кадр — переключаемся на него
-            if (selected in frames.indices) {
-                currentFrameIndex = selected
-                animationGrid.loadFrame(frames[selected])
-            }
-            // Если выбран «Удалить все» — ничего не делаем здесь, это обрабатывается в Negative
-        }
-        .setNeutralButton("Новый") { _, _ ->
-            frames.add(Frame())
-            currentFrameIndex = frames.size - 1
-            animationGrid.clearGrid()
-            showStatus("Создан новый кадр ${currentFrameIndex + 1}")
-        }
-        // Кнопка «Удалить выбранный» (для обычных кадров)
-        .setNegativeButton("Удалить") { _, _ ->
-            when {
-                selected == items.lastIndex -> {
-                    // Выбран пункт «Удалить все кадры»
-                    frames.clear()
-                    currentFrameIndex = -1
+        if (frames.isEmpty()) {
+            AlertDialog.Builder(this)
+                .setTitle("Кадры (0)")
+                .setMessage("Список пуст. Нарисуйте кадр и нажмите «Сохранить».")
+                .setPositiveButton("Новый кадр") { _, _ ->
+                    frames.add(Frame())
+                    currentFrameIndex = 0
                     animationGrid.clearGrid()
-                    showStatus("Все кадры удалены.")
+                    showStatus("Создан новый кадр 1")
                 }
-                selected in frames.indices -> {
-                    // Удаляем один кадр
-                    frames.removeAt(selected)
-                    if (frames.isEmpty()) {
-                        currentFrameIndex = -1
-                        animationGrid.clearGrid()
-                        showStatus("Последний кадр удалён. Список пуст.")
-                    } else {
-                        // Выбираем предыдущий кадр или первый
-                        val newIndex = (selected - 1).coerceAtLeast(0)
-                        if (newIndex in frames.indices) {
-                            currentFrameIndex = newIndex
-                            animationGrid.loadFrame(frames[newIndex])
-                        }
-                        showStatus("Кадр удалён. Осталось: ${frames.size}")
-                    }
-                }
-            }
+                .setNegativeButton("Закрыть", null)
+                .show()
+            return
         }
-        .show()
-}
 
+        // Добавляем специальный элемент в конец списка: «Удалить все кадры»
+        val items = frames.indices.map { "Кадр ${it + 1}" }.toMutableList()
+        items.add("Удалить все кадры")
 
-        val items = frames.indices.map { "Кадр ${it + 1}" }.toTypedArray()
         var selected = if (currentFrameIndex in frames.indices) currentFrameIndex else 0
 
         AlertDialog.Builder(this)
             .setTitle("Кадры (${frames.size})")
-            .setSingleChoiceItems(items, selected) { _, which -> selected = which }
+            .setSingleChoiceItems(items.toTypedArray(), selected) { _, which ->
+                selected = which
+            }
             .setPositiveButton("Закрыть") { _, _ ->
+                // Если выбран обычный кадр — переключаемся на него
                 if (selected in frames.indices) {
                     currentFrameIndex = selected
                     animationGrid.loadFrame(frames[selected])
                 }
+                // Если выбран «Удалить все» — ничего не делаем здесь, это обрабатывается в Negative
             }
             .setNeutralButton("Новый") { _, _ ->
                 frames.add(Frame())
@@ -350,19 +298,33 @@ class MainActivity : Activity() {
                 animationGrid.clearGrid()
                 showStatus("Создан новый кадр ${currentFrameIndex + 1}")
             }
+            // Кнопка «Удалить» теперь работает и как «Удалить выбранный», и как «Удалить все»,
+            // в зависимости от того, какой пункт списка выбран.
             .setNegativeButton("Удалить") { _, _ ->
-                if (selected in frames.indices) {
-                    frames.removeAt(selected)
-                    if (frames.isEmpty()) {
+                when {
+                    selected == items.lastIndex -> {
+                        // Выбран пункт «Удалить все кадры»
+                        frames.clear()
                         currentFrameIndex = -1
                         animationGrid.clearGrid()
-                        showStatus("Все кадры удалены")
-                    } else {
-                        currentFrameIndex = (selected - 1).coerceAtLeast(0)
-                        if (currentFrameIndex in frames.indices) {
-                            animationGrid.loadFrame(frames[currentFrameIndex])
+                        showStatus("Все кадры удалены.")
+                    }
+                    selected in frames.indices -> {
+                        // Удаляем один кадр
+                        frames.removeAt(selected)
+                        if (frames.isEmpty()) {
+                            currentFrameIndex = -1
+                            animationGrid.clearGrid()
+                            showStatus("Последний кадр удалён. Список пуст.")
+                        } else {
+                            // Выбираем предыдущий кадр или первый
+                            val newIndex = (selected - 1).coerceAtLeast(0)
+                            if (newIndex in frames.indices) {
+                                currentFrameIndex = newIndex
+                                animationGrid.loadFrame(frames[newIndex])
+                            }
+                            showStatus("Кадр удалён. Осталось: ${frames.size}")
                         }
-                        showStatus("Кадр удалён. Осталось: ${frames.size}")
                     }
                 }
             }
@@ -434,7 +396,7 @@ class MainActivity : Activity() {
         currentSocket.send(playPacket.toByteString())
 
         isPlaying = true
-        findViewById<Button>(R.id.startButton).text = "Стоп"
+        findViewById<Button>(R.id.startButton)?.text = "Стоп"
 
         handler.removeCallbacks(sendTask)
 
@@ -490,164 +452,4 @@ class MainActivity : Activity() {
 
         val request = NetworkRequest.Builder()
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-            .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            .build()
-
-        val callback = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) {
-                handler.post {
-                    if (!started || generation != networkGeneration) return@post
-                    if (wifiNetwork != network) {
-                        wifiNetwork = network
-                        connectSocket()
-                    }
-                }
-            }
-
-            override fun onLost(network: Network) {
-                handler.post {
-                    if (!started || generation != networkGeneration) return@post
-                    if (wifiNetwork == network) {
-                        wifiNetwork = null
-                        dropSocket()
-                        showStatus("Wi-Fi потерян. Подключитесь к сети LEDS.")
-                    }
-                }
-            }
-
-            override fun onUnavailable() {
-                handler.post {
-                    if (!started || generation != networkGeneration) return@post
-                    wifiNetwork = null
-                    dropSocket()
-                    showStatus("Wi-Fi недоступен. Проверьте подключение к LEDS.")
-                }
-            }
-        }
-
-        networkCallback = callback
-
-        try {
-            connectivityManager.requestNetwork(request, callback)
-        } catch (exception: RuntimeException) {
-            networkCallback = null
-            showStatus("Не удалось запросить Wi-Fi: ${exception.message ?: exception.javaClass.simpleName}")
-        }
-    }
-
-    private fun connectSocket() {
-        if (!started) return
-        val network = wifiNetwork ?: return
-
-        dropSocket(graceful = true)
-        showStatus("Подключение к Wemos: 192.168.4.1…")
-
-        val generation = socketGeneration
-
-        val client = OkHttpClient.Builder()
-            .socketFactory(network.socketFactory)
-            .connectTimeout(4, TimeUnit.SECONDS)
-            .writeTimeout(4, TimeUnit.SECONDS)
-            .readTimeout(0, TimeUnit.MILLISECONDS)
-            .retryOnConnectionFailure(false)
-            .build()
-
-        httpClient = client
-
-        val request = Request.Builder().url(SOCKET_URL).build()
-
-        val listener = object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-                handler.post {
-                    if (!started || generation != socketGeneration) {
-                        webSocket.cancel()
-                        return@post
-                    }
-
-                    connected = true
-                    matrixView.isEnabled = true
-                    showStatus("Подключено к Wemos. Матрица готова.")
-
-                    for (i in 0 until 8) {
-                        pendingBits[i] = 0
-                        lastSentBits[i] = 0
-                    }
-                    forceSend = true
-
-                    handler.removeCallbacks(heartbeatTask)
-                    handler.removeCallbacks(sendTask)
-
-                    if (connected) {
-                        handler.postDelayed(sendTask, SEND_INTERVAL_MS)
-                        handler.postDelayed(heartbeatTask, HEARTBEAT_MS)
-                    }
-                }
-            }
-
-            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                webSocket.close(code, reason)
-                handler.post { connectionFailed(generation, "Контроллер закрыл соединение.") }
-            }
-
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                handler.post { connectionFailed(generation, "Соединение закрыто.") }
-            }
-
-            override fun onFailure(webSocket: WebSocket, throwable: Throwable, response: Response?) {
-                handler.post { connectionFailed(generation, "Нет связи с Wemos. Проверьте сеть LEDS.") }
-            }
-        }
-
-        socket = client.newWebSocket(request, listener)
-    }
-
-    private fun connectionFailed(generation: Long, message: String) {
-        if (!started || generation != socketGeneration) return
-
-        dropSocket()
-
-        if (wifiNetwork != null) {
-            showStatus("$message Повторное подключение…")
-            handler.postDelayed(reconnectTask, RECONNECT_MS)
-        } else {
-            showStatus("Подключитесь к Wi-Fi LEDS.")
-        }
-    }
-
-    private fun dropSocket(graceful: Boolean = false) {
-        socketGeneration++
-        connected = false
-
-        handler.removeCallbacks(heartbeatTask)
-        handler.removeCallbacks(sendTask)
-        handler.removeCallbacks(reconnectTask)
-
-        val oldSocket = socket
-        socket = null
-
-        matrixView.clearTouch()
-        matrixView.isEnabled = false
-
-        for (i in 0 until 8) {
-            pendingBits[i] = 0
-            lastSentBits[i] = 0
-        }
-        forceSend = false
-
-        if (oldSocket != null) {
-            if (graceful) {
-                val emptyPacket = ByteArray(9)
-                emptyPacket[0] = 'S'.code.toByte()
-                val sent = oldSocket.send(emptyPacket.toByteString())
-                val closing = oldSocket.close(1000, "Leaving")
-                if (!sent || !closing) oldSocket.cancel()
-            } else {
-                oldSocket.cancel()
-            }
-        }
-
-        httpClient?.connectionPool?.evictAll()
-        httpClient?.dispatcher?.executorService?.shutdown()
-        httpClient = null
-    }
-}
+            .removeCapability(NetworkCapabilities.
