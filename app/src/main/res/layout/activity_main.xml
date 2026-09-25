@@ -2,39 +2,153 @@
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:padding="12dp"
-    android:background="#FFFFFF">
-
-    <TextView
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="@string/instructions"
-        android:textColor="#333333"
-        android:textSize="15sp" />
+    android:orientation="vertical">
 
     <TextView
         android:id="@+id/statusText"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:minHeight="48dp"
-        android:gravity="center_vertical"
-        android:text="@string/initial_status"
-        android:textColor="#555555"
-        android:textSize="15sp"
-        android:accessibilityLiveRegion="polite" />
+        android:padding="8dp"
+        android:gravity="center"
+        android:text="Ожидание Wi-Fi. Подключитесь к сети LEDS."
+        android:textSize="14sp" />
 
-    <Button
-        android:id="@+id/reconnectButton"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="@string/reconnect" />
-
-    <com.example.ledmatrix.MatrixView
-        android:id="@+id/matrixView"
+    <FrameLayout
+        android:id="@+id/contentArea"
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_weight="1"
-        android:contentDescription="Матрица светодиодов, 8 строк и 8 столбцов" />
+        android:layout_weight="1">
 
+        <!-- Режим рисования -->
+        <LinearLayout
+            android:id="@+id/drawingLayout"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical"
+            android:visibility="visible">
+
+            <com.example.ledmatrix.MatrixView
+                android:id="@+id/matrixView"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1" />
+
+            <Button
+                android:id="@+id/reconnectButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Переподключить" />
+        </LinearLayout>
+
+        <!-- Режим анимации -->
+        <LinearLayout
+            android:id="@+id/animationLayout"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <com.example.ledmatrix.AnimationGridView
+                android:id="@+id/animationGridView"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/colorButton"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:layout_height="wrap_content"
+                    android:text="Цвет" />
+
+                <Button
+                    android:id="@+id/eraserButton"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:layout_height="wrap_content"
+                    android:text="Ластик" />
+
+                <Button
+                    android:id="@+id/clearButton"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:layout_height="wrap_content"
+                    android:text="Очистить" />
+
+                <Button
+                    android:id="@+id/saveFrameButton"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:layout_height="wrap_content"
+                    android:text="Сохранить" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
+
+                <Button
+                    android:id="@+id/framesButton"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:layout_height="wrap_content"
+                    android:text="Кадры" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Длит.:"
+                    android:padding="4dp" />
+
+                <EditText
+                    android:id="@+id/durationInput"
+                    android:layout_width="70dp"
+                    android:layout_height="wrap_content"
+                    android:inputType="number"
+                    android:text="200"
+                    android:gravity="center" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="мс"
+                    android:padding="4dp" />
+
+                <Button
+                    android:id="@+id/startButton"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:layout_height="wrap_content"
+                    android:text="Старт" />
+            </LinearLayout>
+        </LinearLayout>
+    </FrameLayout>
+
+    <!-- Вкладки -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/tabDrawing"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="48dp"
+            android:text="Рисование" />
+
+        <Button
+            android:id="@+id/tabAnimation"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="48dp"
+            android:text="Анимации" />
+    </LinearLayout>
 </LinearLayout>
